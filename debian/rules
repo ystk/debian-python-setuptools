@@ -1,0 +1,186 @@
+#!/usr/bin/make -f
+# -*- makefile -*-
+
+# Uncomment this to turn on verbose mode.
+#export DH_VERBOSE=1
+
+# This has to be exported to make some magic below work.
+export DH_OPTIONS
+
+# setuptools doesn't handle translated messages
+export LC_ALL=C
+
+#PYVERS	:= 2.3 2.5 $(shell pyversions -vr debian/control)
+XPYVERS	:= 2.7
+PYVERS	:= 2.7
+PYVERS3	:= 3.4
+PYVER   := $(shell python -c 'import sys; print sys.version[:3]')
+SETUPTOOLSVER=1.3.2
+export XPYVERS
+
+include /usr/share/python3/python.mk
+
+pname = $(if $(findstring 3.,$(2)),$(subst python-,python3-,$(1)),$(1))
+
+p_pkgr	= python-pkg-resources
+p_setp	= python-setuptools
+p_doc	= python-setuptools-doc
+
+d_pkgr	= debian/$(p_pkgr)
+d_setp	= debian/$(p_setp)
+d_doc	= debian/$(p_doc)
+
+build: build-stamp
+build-arch: build-stamp
+build-indep: build-stamp build-doc-stamp
+build-stamp: $(PYVERS:%=build-python%) $(PYVERS3:%=build-python%) build-doc-stamp
+	touch $@
+build-doc-stamp:
+	PYTHONPATH=$(CURDIR) \
+		sh -c 'cd docs && sphinx-build -b html -d build/doctrees . build/html'
+	touch $@
+build-python%: pre-build-stamp
+	python$* setup.py build
+	touch $@
+pre-build-stamp:
+	[ -d setuptools.egg-info.saved ] || cp -a setuptools.egg-info setuptools.egg-info.saved
+	touch $@
+
+clean:
+	dh_testdir
+	dh_testroot
+	rm -f build-python* build-doc-stamp build-stamp
+	rm -rf build dist
+	-find -name __pycache__ | xargs rm -rf
+	-find -name '*.py[co]' | xargs rm -f
+	rm -rf docs/build
+	rm -f template* \(dev\).py
+	if [ -d setuptools.egg-info.saved ]; then \
+		rm -rf setuptools.egg-info; \
+		mv setuptools.egg-info.saved setuptools.egg-info; \
+	fi
+	dh_clean
+
+install: build install-prereq $(PYVERS:%=install-python%) $(PYVERS3:%=install-python%) install-wheel
+	find debian -name 'setuptools_boot.py*' | xargs -r rm -f
+	find debian -name '*.py[co]' | xargs -r rm -f
+	pkgs=$$(dh_listpackages); cd debian && find $$pkgs -mindepth 1 -type d -empty -print -delete
+
+	rm -f debian/python-*/usr/bin/easy_install-3*
+	rm -f debian/python3-*/usr/bin/easy_install-2*
+	mv debian/python3-setuptools/usr/bin/easy_install \
+	  debian/python3-setuptools/usr/bin/easy_install3
+
+	: # Replace all '#!' calls to python with $(PYTHON)
+	: # and make them executable
+	for i in \
+	  `find debian/python-*/usr/lib debian/python-*/usr/bin -type f`; \
+	do \
+	  case "$$i" in *-[0-9].[0-9]) continue; esac; \
+	  sed '1s,#!.*python[^ ]*\(.*\),#! /usr/bin/python\1,' \
+	        $$i > $$i.temp; \
+	  if cmp --quiet $$i $$i.temp; then \
+	    rm -f $$i.temp; \
+	  else \
+	    mv -f $$i.temp $$i; \
+	    chmod 755 $$i; \
+	    echo "fixed interpreter: $$i"; \
+	  fi; \
+	done
+
+	for i in \
+	  `find debian/python3-*/usr/lib debian/python3-*/usr/bin -type f`; \
+	do \
+	  case "$$i" in *-[0-9].[0-9]) continue; esac; \
+	  sed '1s,#!.*python[^ ]*\(.*\),#! /usr/bin/python3\1,' \
+	        $$i > $$i.temp; \
+	  if cmp --quiet $$i $$i.temp; then \
+	    rm -f $$i.temp; \
+	  else \
+	    mv -f $$i.temp $$i; \
+	    chmod 755 $$i; \
+	    echo "fixed interpreter: $$i"; \
+	  fi; \
+	done
+
+install-prereq:
+	dh_testdir
+	dh_testroot
+	dh_clean -k
+
+install-python%:
+	dh_installdirs -A usr/bin /$(call py_libdir,$*)
+	python$* setup.py install \
+	  --root=$(CURDIR)/$(call pname,$(d_setp),$*) --install-layout=deb
+
+	mv $(call pname,$(d_setp),$*)/$(call py_libdir,$*)/pkg_resources.py \
+	  $(call pname,$(d_pkgr),$*)/$(call py_libdir,$*)/
+
+#	mv $(call pname,$(d_setp),$*)/$(call py_libdir,$*)/setuptools-$(SETUPTOOLSVER).egg-info \
+#	  $(call pname,$(d_setp),$*)/$(call py_libdir,$*)/setuptools.egg-info
+
+	echo setuptools-$(SETUPTOOLSVER).egg-info \
+	  > $(call pname,$(d_setp),$*)/$(call py_libdir,$*)/setuptools.pth
+
+install-wheel:
+	mkdir -p debian/python-setuptools-whl/usr/share/python-wheels
+	python3 setup.py bdist_wheel --universal \
+	        -d debian/python-setuptools-whl/usr/share/python-wheels
+	dh_installdirs -ppython-setuptools-whl usr/share
+
+binary-arch:
+
+binary-indep: build install
+	dh_testdir
+	dh_testroot
+	dh_installchangelogs -p$(p_setp) CHANGES.txt
+	dh_installchangelogs -N$(p_setp)
+	dh_installdocs -N$(p_setp) -N$(p_pkgr)
+	dh_installdocs -p$(p_pkgr) docs/pkg_resources.txt
+	dh_installdocs -p$(p_setp) -Xpkg_resources docs/*.txt
+	mkdir -p $(d_doc)/usr/share/doc/$(p_doc)
+	cp -pr docs/build/html $(d_doc)/usr/share/doc/$(p_doc)/
+	dh_sphinxdoc -p$(p_doc)
+	dh_link -p$(p_doc) \
+	  /usr/share/doc/$(p_doc)/html /usr/share/doc/$(p_setp)/html \
+	  /usr/share/doc/$(p_doc)/html /usr/share/doc/$(p_setp3)/html
+
+	dh_compress -i
+	dh_fixperms -i
+
+	for v in $(filter-out 3.%, $(PYVERS)); do \
+	  sed -i "s/python2\../python$$v/g" $(d_setp)/usr/bin/easy_install-$$v; \
+	done
+#	for v in $(filter-out 2.%, $(PYVERS)); do \
+#	  sed -i "s/python3\../python$$v/g" debian/$(call pname,$(p_setp),3.1)/usr/bin/easy_install-$$v; \
+#	done
+
+	dh_python2 -p$(p_pkgr) -p$(p_setp) #-p$(p_dist)
+	cat $(d_setp).substvars
+	( \
+	  echo 'python:Versions=2.7'; \
+	  echo 'python:Provides=python2.7-setuptools'; \
+	  echo 'python:Depends=python:any (>= 2.7), python:any (<< 2.8)'; \
+	) > $(d_setp).substvars
+	cp $(d_setp).substvars $(d_pkgr).substvars
+
+	dh_python3 -p$(call pname,$(p_pkgr),3.3) -p$(call pname,$(p_setp),3.3) # -p$(call pname,$(p_dist),3.3)
+	cat debian/$(call pname,$(p_setp),3.2).substvars
+	cat debian/$(call pname,$(p_pkgr),3.2).substvars
+
+##	cp $(d_setp).substvars $(d_dist).substvars
+
+	( \
+	  echo 'python3:Versions=3.3'; \
+	  echo 'python3:Provides=python3.3-setuptools'; \
+	  echo 'python3:Depends=python3:any (>= 3.3), python3:any (<< 3.5)'; \
+	) > $(call pname,$(d_setp),3.3).substvars
+	cp $(call pname,$(d_setp),3.3).substvars $(call pname,$(d_pkgr),3.3).substvars
+
+	dh_installdeb -i
+	dh_gencontrol -i
+	dh_md5sums -i
+	dh_builddeb -i
+
+binary: binary-arch binary-indep
+.PHONY: build clean binary-indep binary-arch binary install
